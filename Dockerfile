@@ -6,7 +6,7 @@ RUN apt-get update && \
         cmake librsvg2-dev colordiff libpq-dev libpng-dev libjpeg-dev libgif-dev libgeos-dev libgd-dev \
         libfreetype6-dev libfcgi-dev libcurl4-gnutls-dev libcairo2-dev libgdal-dev libproj-dev libxml2-dev \
         libxslt1-dev python-dev php-dev libexempi-dev lcov lftp libgdal-dev ninja-build git curl \
-        clang libprotobuf-c-dev protobuf-c-compiler libharfbuzz-dev libcairo2-dev librsvg2-dev && \
+        clang libprotobuf-c-dev protobuf-c-compiler libharfbuzz-dev libcairo2-dev librsvg2-dev unzip && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
@@ -18,8 +18,29 @@ RUN git clone ${MAPSERVER_REPO} --branch=${MAPSERVER_BRANCH} --depth=100 /src
 COPY checkout_release /tmp
 RUN cd /src; /tmp/checkout_release ${MAPSERVER_BRANCH}
 
+COPY instantclient /tmp/instantclient
+
+ARG WITH_ORACLE=OFF
+
+RUN (if test "${WITH_ORACLE}" = "ON"; then \
+       apt-get update && \
+       LC_ALL=C DEBIAN_FRONTEND=noninteractive apt-get install -y bsdtar libaio-dev && \
+       apt-get clean && \
+       rm -rf /var/lib/apt/lists/* && \
+       mkdir -p /opt/instantclient && \
+       cd /opt/instantclient && \
+       (for i in /tmp/instantclient/*.zip; do bsdtar --strip-components=1 -xvf $i; done) && \
+       ls -ltr /opt/instantclient && \
+       ln -s libnnz19.so /opt/instantclient/libnnz18.so; \
+     else \
+       mkdir -p /opt/instantclient/sdk; \
+     fi )
+
 WORKDIR /src/build
-RUN cmake .. \
+RUN if test "${WITH_ORACLE}" = "ON"; then \
+      export ORACLE_HOME=/opt/instantclient; \
+    fi; \
+    cmake .. \
       -GNinja \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=/usr/local \
@@ -30,10 +51,12 @@ RUN cmake .. \
       -DWITH_XMLMAPFILE=1 \
       -DWITH_POINT_Z_M=1 \
       -DWITH_CAIRO=1 \
-      -DWITH_RSVG=1
+      -DWITH_RSVG=1 \
+      -DWITH_ORACLESPATIAL=${WITH_ORACLE}
 
 RUN ninja install
 
+RUN rm -rf /opt/instantclient/sdk
 
 FROM ubuntu:18.04 as runner
 LABEL maintainer="info@camptocamp.com"
@@ -55,7 +78,7 @@ ENV APACHE_CONFDIR=/etc/apache2 \
 RUN apt-get update && \
     apt-get install --assume-yes --no-install-recommends ca-certificates apache2 libapache2-mod-fcgid curl \
         libfribidi0 librsvg2-2 libpq5 libpng16-16 libjpeg8 libgif7 libgeos-c1v5 libfcgi0ldbl libgdal20 \
-        libxslt1.1 libprotobuf-c1 libcap2-bin && \
+        libxslt1.1 libprotobuf-c1 libcap2-bin libaio1 && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* && \
     echo 'Allow apache2 to bind to port <1024 for any user' && \
@@ -80,7 +103,10 @@ EXPOSE 80
 
 COPY --from=builder /usr/local/bin /usr/local/bin/
 COPY --from=builder /usr/local/lib /usr/local/lib/
+COPY --from=builder /opt/instantclient /usr/local/lib/
 COPY runtime /
+
+RUN ldconfig
 
 ENV MS_DEBUGLEVEL=0 \
     MS_ERRORFILE=stderr \
